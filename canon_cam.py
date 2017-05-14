@@ -1,9 +1,6 @@
 #!/cygdrive/c/Python27_32/python
 """
-    TODO: - Complete Monochrome RAW image taking
-                - Need to figure out how to handle RAW image once taken (not
-                  necessarily part of this script but part of OCR script)
-          - Add event callbacks to monitor camera status (could improve
+    TODO: - Add event callbacks to monitor camera status (could improve
             refresh rate and script speed)
           - Add HOUGH lines from OpenCV to give feedback on possible rotation
             needed to square image
@@ -24,7 +21,8 @@ import time
 
 # Try to reduce the clutter in this script
 import canon_helpers as c_hlp # Our helpers
-from canon_errors import eds_err # Error codes and messages from EDSDK.h
+from canon_errors import * # EDSDK Errors from the errors header
+from canon_types import * # EDSDK Types from the types header
 
 ###############################################################################
 ###                                                                         ###
@@ -84,6 +82,10 @@ class LivePreviewImage(ctypes.Structure):
             self.h_lines = []
             self.v_lines = []
 
+            self.av  = 0
+            self.iso = 0
+            self.tv  = 0
+
         def Overlay(self):
             # Draw all over the image so we can square the physical object
 
@@ -127,18 +129,46 @@ class LivePreviewImage(ctypes.Structure):
             t1 = t0 // 2; t0 = ( t0 + 1 ) // 2
             self.h_lines = [(i*grid_spacing+self.y_c_p) for i in range(-t1,t0)]
 
+            # User Controls
+            cv2.rectangle(self.image, (0,0), (200,100), (0,0,0), -1)
+
+            cv2.putText( self.image,
+                         "(a,q) ISO = %s" % iso[self.iso],
+                         ( 5, 20 ),
+                         cv2.FONT_HERSHEY_PLAIN,
+                         1,
+                         (255,255,255) )
+
+            cv2.putText( self.image,
+                         "(s,w) Aperture = %s" % av[self.av],
+                         ( 5, 40 ),
+                         cv2.FONT_HERSHEY_PLAIN,
+                         1,
+                         (255,255,255) )
+
+            cv2.putText( self.image,
+                         "(d,e) Shutter = %s" % tv[self.tv],
+                         ( 5, 60 ),
+                         cv2.FONT_HERSHEY_PLAIN,
+                         1,
+                         (255,255,255) )
 
 class CanonLiveView():
 
-    buffer_size = ctypes.c_ulonglong( depth * width * height )
-    camera      = ctypes.c_void_p(None)
-    data        = LivePreviewImage()
-    device      = ctypes.c_uint(0)
-    image_ref   = ctypes.c_void_p(None)
-    out_buffer  = ctypes.c_void_p(None)
-    stream      = ctypes.c_void_p(None)
-
     def __init__(self):
+
+        self.buffer_size = ctypes.c_ulonglong( depth * width * height )
+        self.camera      = ctypes.c_void_p(None)
+        self.data        = LivePreviewImage()
+        self.device      = ctypes.c_uint(0)
+        self.image_ref   = ctypes.c_void_p(None)
+        self.out_buffer  = ctypes.c_void_p(None)
+        self.stream      = ctypes.c_void_p(None)
+
+        self.prop_iso    = ctypes.c_uint()
+        self.prop_av     = ctypes.c_uint()
+        self.prop_tv     = ctypes.c_uint()
+
         self.Initialize()
 
     def Cleanup(self):
@@ -152,11 +182,12 @@ class CanonLiveView():
 
         # Close the live stream, then all of the streams, and last the edsdk
         self.device = ctypes.c_uint(0)
-        status = edsdk_dll.EdsSetPropertyData( self.camera,
-                                               0x500,
-                                               0,
-                                               ctypes.sizeof(self.device),
-                                               ctypes.byref(self.device) )
+        status = edsdk_dll.EdsSetPropertyData(
+                    self.camera,
+                    eds_typ["kEdsPropID_Evf_OutputDevice"],
+                    0,
+                    ctypes.sizeof(self.device),
+                    ctypes.byref(self.device) )
         self.Error("Disconnect Output Device", status)
 
         status = edsdk_dll.EdsCloseSession(self.camera)
@@ -168,23 +199,26 @@ class CanonLiveView():
         status = edsdk_dll.EdsTerminateSDK()
         self.Error("EdsTerminateSDK", status)
 
+    # def DownloadImage(self):
+    #     edsdk_dll.EdsDownload
+
     def Error(self, msg, error):
         c_hlp.ProcessError( msg, error, eds_err )
 
     def GrabImage(self):
         if self.stream.value != None:
             status = edsdk_dll.EdsCreateEvfImageRef(
-                self.stream,
-                ctypes.byref( self.image_ref ) )
-            self.Error("Create image reference", status)
+                        self.stream,
+                        ctypes.byref( self.image_ref ) )
+            if status != 0: self.Error("Create image reference", status)
 
         if self.image_ref.value != None:
             status = edsdk_dll.EdsDownloadEvfImage(self.camera, self.image_ref)
-            self.Error("Download image", status)
+            # self.Error("Download image", status)
 
         status = edsdk_dll.EdsGetPointer( self.stream,
                                           ctypes.byref( self.out_buffer ) )
-        self.Error("Get Pointer to Output Buffer", status)
+        # self.Error("Get Pointer to Output Buffer", status)
 
         self.data.values = ctypes.cast( self.out_buffer,
                                         ctypes.POINTER(ctypes.c_ubyte) )
@@ -219,20 +253,22 @@ class CanonLiveView():
         self.Error("EdsOpenSession", status)
 
         # Set output device to be the computer if not already (check first)
-        status = edsdk_dll.EdsGetPropertyData( self.camera,
-                                               0x500,
-                                               0,
-                                               ctypes.sizeof(self.device),
-                                               ctypes.byref(self.device) )
+        status = edsdk_dll.EdsGetPropertyData(
+                    self.camera,
+                    eds_typ["kEdsPropID_Evf_OutputDevice"],
+                    0,
+                    ctypes.sizeof(self.device),
+                    ctypes.byref(self.device) )
         self.Error("Check output device state", status)
 
         if self.device.value == 0: # Output device wasn't the computer
-            self.device = ctypes.c_uint(2)
-            status = edsdk_dll.EdsSetPropertyData( self.camera,
-                                                   0x500,
-                                                   0,
-                                                   ctypes.sizeof(self.device),
-                                                   ctypes.byref(self.device) )
+            self.device = ctypes.c_uint( eds_typ["kEdsEvfOutputDevice_PC"] )
+            status = edsdk_dll.EdsSetPropertyData(
+                        self.camera,
+                        eds_typ["kEdsPropID_Evf_OutputDevice"],
+                        0,
+                        ctypes.sizeof(self.device),
+                        ctypes.byref(self.device) )
             self.Error("Output Device is PC", status)
 
             # Give time for the mirror to flip up
@@ -243,6 +279,39 @@ class CanonLiveView():
         status = edsdk_dll.EdsCreateMemoryStream( self.buffer_size,
                                                   ctypes.byref(self.stream) )
         self.Error("Create memory stream", status)
+
+        # Get the ISO setting
+        status = edsdk_dll.EdsGetPropertyData( self.camera,
+                                               eds_typ["kEdsPropID_ISOSpeed"],
+                                               0,
+                                               ctypes.sizeof(self.prop_iso),
+                                               ctypes.byref(self.prop_iso) )
+        status_msg = "Get ISO setting: %s" % \
+                                           iso[iso_v.index(self.prop_iso.value)]
+        self.Error(status_msg, status)
+        self.data.iso = iso_v.index(self.prop_iso.value)
+
+        # Get the Av setting
+        status = edsdk_dll.EdsGetPropertyData( self.camera,
+                                               eds_typ["kEdsPropID_Av"],
+                                               0,
+                                               ctypes.sizeof(self.prop_av),
+                                               ctypes.byref(self.prop_av) )
+        status_msg = "Get Aperture setting: %s" % \
+                                              av[av_v.index(self.prop_av.value)]
+        self.Error(status_msg, status)
+        self.data.av = av_v.index(self.prop_av.value)
+
+        # Get the Tv setting
+        status = edsdk_dll.EdsGetPropertyData( self.camera,
+                                               eds_typ["kEdsPropID_Tv"],
+                                               0,
+                                               ctypes.sizeof(self.prop_tv),
+                                               ctypes.byref(self.prop_tv) )
+        status_msg = "Get Shutter setting: %s" % \
+                                              tv[tv_v.index(self.prop_tv.value)]
+        self.Error(status_msg, status)
+        self.data.tv = tv_v.index(self.prop_tv.value)
 
     def SavePreviewImage(self):
         f = open("tmp.jpg", "wb")
@@ -296,18 +365,22 @@ class CanonLiveView():
         """ Take and save a bayer image with 12-bit resolution. """
         ## Set camera settings to take image
         # Set Image Quality as RAW if it is not already set
-        prop = ctypes.c_uint(0x64ff0f); out = ctypes.c_uint(0)
-        status = edsdk_dll.EdsGetPropertyData( self.camera,
-                                               0x100,
-                                               0,
-                                               ctypes.sizeof(out),
-                                               ctypes.byref(out) )
+        prop = ctypes.c_uint( eds_typ["EdsImageQuality_LR"] )
+        out = ctypes.c_uint(0)
+        status = edsdk_dll.EdsGetPropertyData(
+                    self.camera,
+                    eds_typ["kEdsPropID_ImageQuality"],
+                    0,
+                    ctypes.sizeof(out),
+                    ctypes.byref(out) )
+
         if out.value != prop.value:
-            status = edsdk_dll.EdsSetPropertyData( self.camera,
-                                                   0x100,
-                                                   0,
-                                                   ctypes.sizeof(prop),
-                                                   ctypes.byref(prop) )
+            status = edsdk_dll.EdsSetPropertyData(
+                        self.camera,
+                        eds_typ["kEdsPropID_ImageQuality"],
+                        0,
+                        ctypes.sizeof(prop),
+                        ctypes.byref(prop) )
 
         # Set Picture Style to Monochrome (only affects color jpeg in raw)
         # prop = ctypes.c_uint(0x86)
@@ -328,6 +401,17 @@ class CanonLiveView():
         #                                        0,
         #                                        ctypes.sizeof(prop),
         #                                        ctypes.byref(prop) )
+
+    def UpdateSetting(self, setting, value):
+        """ Update settings on the camera. Intended for ISO Speed, Aperture,
+            Shutter Speed. """
+        prop = ctypes.c_uint( value )
+        status = edsdk_dll.EdsSetPropertyData(
+                        self.camera,
+                        setting,
+                        0,
+                        ctypes.sizeof(prop),
+                        ctypes.byref(prop) )
 
 ###############################################################################
 ###                                                                         ###
@@ -366,7 +450,11 @@ if __name__ == "__main__":
 
         canon_lp.data.Overlay()
 
-        cv2.imshow("live view", canon_lp.data.image)
+        out_image = cv2.resize( canon_lp.data.image,
+                                None, fx=4, fy=4,
+                                interpolation=cv2.INTER_NEAREST )
+
+        cv2.imshow( "live view", out_image )
         k = cv2.waitKey(100)
 
         if k == 27 or k == ord('x'): break
@@ -375,11 +463,65 @@ if __name__ == "__main__":
             # Save image for OCR
             canon_lp.Take_RAW_Monochrome()
 
-        elif k == ord('q'):
+        elif k == ord('m'):
             # Save Preview image
             f = open("temp.jpg", "wb")
             f.write(canon_lp.data.jpeg)
             f.close()
+
+        elif k == ord('a'):
+            # Decrease ISO
+            canon_lp.data.iso -= 1
+            if canon_lp.data.iso < 0:
+                canon_lp.data.iso = 0
+            else:
+                canon_lp.UpdateSetting( eds_typ["kEdsPropID_ISOSpeed"], 
+                                        iso_v[canon_lp.data.iso] )
+
+        elif k == ord('q'):
+            # Increase ISO
+            canon_lp.data.iso += 1
+            if canon_lp.data.iso >= len(iso):
+                canon_lp.data.iso = len(iso) - 1
+            else:
+                canon_lp.UpdateSetting( eds_typ["kEdsPropID_ISOSpeed"],
+                                        iso_v[canon_lp.data.iso] )
+
+        elif k == ord('s'):
+            # Decrease Aperture
+            canon_lp.data.av -= 1
+            if canon_lp.data.av < 0:
+                canon_lp.data.av = 0
+            else:
+                canon_lp.UpdateSetting( eds_typ["kEdsPropID_Av"], 
+                                        av_v[canon_lp.data.av] )
+
+        elif k == ord('w'):
+            # Increase Aperture
+            canon_lp.data.av += 1
+            if canon_lp.data.av >= len(av):
+                canon_lp.data.av = len(av) - 1
+            else:
+                canon_lp.UpdateSetting( eds_typ["kEdsPropID_Av"],
+                                        av_v[canon_lp.data.av] )
+
+        elif k == ord('d'):
+            # Decrease Shutter Speed
+            canon_lp.data.tv -= 1
+            if canon_lp.data.tv < 0:
+                canon_lp.data.tv = 0
+            else:
+                canon_lp.UpdateSetting( eds_typ["kEdsPropID_Tv"], 
+                                        tv_v[canon_lp.data.tv] )
+
+        elif k == ord('e'):
+            # Increase Shutter Speed
+            canon_lp.data.tv += 1
+            if canon_lp.data.tv >= len(tv):
+                canon_lp.data.tv = len(tv) - 1
+            else:
+                canon_lp.UpdateSetting( eds_typ["kEdsPropID_Tv"],
+                                        tv_v[canon_lp.data.tv] )
 
         # Timer()
 
