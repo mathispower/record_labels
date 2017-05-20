@@ -13,9 +13,11 @@
 ###                                 Imports                                 ###
 ###                                                                         ###
 ###############################################################################
+import argparse
 import cv2
 import ctypes
 import numpy as np
+import os
 import sys
 import time
 
@@ -29,16 +31,12 @@ from canon_types import * # EDSDK Types from the types header
 ###                             Global Variables                            ###
 ###                                                                         ###
 ###############################################################################
-# Output image properties (set internal to the camera)
-# While it is possible to set these at run time, it's much easier to just set
-# it on the camera before plugging the USB in.
+cwd    = os.getcwd() + '\\'
 depth  = 3    # Color image so 3 channels
 height = 2848 # Height and Width are the image format set in the camera;
+IM_DIR = "C:\\Code\\Records\\images\\"
+live   = False # use as an indicator for the live stream window to indicate live
 width  = 4272 # These values are the maximum for the Canon Rebel Xsi
-
-# Initialize the helpers module
-c_hlp.debug   = False
-c_hlp.verbose = True
 
 # Load the canon library
 edsdk_dll = ctypes.WinDLL("EDSDK\\EDSDK.dll")
@@ -153,6 +151,14 @@ class LivePreviewImage(ctypes.Structure):
                          1,
                          (255,255,255) )
 
+            if live:
+                cv2.circle( self.image,
+                            ( self.width-20, 20 ),
+                            10,
+                            (0,255,0),
+                            -1 )
+
+
 class CanonLiveView():
 
     def __init__(self):
@@ -199,11 +205,149 @@ class CanonLiveView():
         status = edsdk_dll.EdsTerminateSDK()
         self.Error("EdsTerminateSDK", status)
 
-    # def DownloadImage(self):
-    #     edsdk_dll.EdsDownload
+    def DownloadImage(self):
+        count    = ctypes.c_ulonglong(0)
+        DCIM     = False
+        dir_item = ctypes.c_void_p()
+        volume   = ctypes.c_void_p()
+
+        status = edsdk_dll.EdsGetChildCount( self.camera, ctypes.byref(count) )
+        self.Error("Get Camera count", status)
+
+        status = edsdk_dll.EdsGetChildAtIndex( self.camera,
+                                               0,
+                                               ctypes.byref(volume) )
+        self.Error("Get Volume", status)
+
+        status = edsdk_dll.EdsGetChildCount( volume, ctypes.byref(count) )
+        self.Error("Get Volume count", status)
+
+        for i in range(count.value):
+
+            dir_item_info = EdsDirectoryItemInfo()
+
+            status = edsdk_dll.EdsGetChildAtIndex( volume,
+                                                   i,
+                                                   ctypes.byref(dir_item) )
+            self.Error("Get Child at Index %i"%i, status)
+
+            status = edsdk_dll.EdsGetDirectoryItemInfo(
+                        dir_item,
+                        ctypes.byref(dir_item_info) )
+            self.Error("Get Item Info", status)
+
+            if dir_item_info.isFolder == 1 and \
+               dir_item_info.szFileName == "DCIM":
+                DCIM = True
+                break
+
+        if not DCIM:
+            self.Error( "DCIM folder not found on camera.",0x40 )
+            return -1
+
+        # The idea is to download the last image taken
+        while True:
+            status = edsdk_dll.EdsGetChildCount( dir_item, ctypes.byref(count) )
+            self.Error( "Get %s count (%i)" % ( dir_item_info.szFileName,
+                                                count.value ),
+                        status)
+
+            if count.value == 0:
+                self.Error( "No image found on camera.", 0x22 )
+                return -1
+
+            child_item = ctypes.c_void_p()
+            child_item_info = EdsDirectoryItemInfo()
+
+            status = edsdk_dll.EdsGetChildAtIndex( dir_item,
+                                                   (count.value - 1),
+                                                   ctypes.byref(child_item) )
+            self.Error("Get File at Index %i"%i, status)
+
+            status = edsdk_dll.EdsGetDirectoryItemInfo(
+                        child_item,
+                        ctypes.byref(child_item_info) )
+            self.Error("Get Item Info (%s)"%child_item_info.szFileName, status)
+
+            if child_item_info.isFolder == 0:
+                file_item = child_item
+                file_item_info = child_item_info
+                break
+
+            else:
+                dir_item = child_item
+
+        file_stream = ctypes.c_void_p(None)
+        status = edsdk_dll.EdsCreateFileStream(
+                        IM_DIR + file_item_info.szFileName,
+                        1,#eds_typ["kEdsFileCreateDisposition_CreateAlways"],
+                        2,#eds_typ["kEdsAccess_ReadWrite"],
+                        ctypes.byref(file_stream) )
+        self.Error("Create File Stream", status)
+
+        status = edsdk_dll.EdsDownload( file_item,
+                                        ctypes.c_ulonglong(file_item_info.size),
+                                        file_stream )
+        self.Error("Download image", status)
+
+        status = edsdk_dll.EdsDownloadComplete( file_item )
+        self.Error("Download Complete", status)
+
+        # Verify file is downloaded locally
+        if os.path.isfile( cwd + file_item_info.szFileName ):
+            # delete the file on the camera
+            status = edsdk_dll.EdsDeleteDirectoryItem( file_item )
+            self.Error("Delete remote file",status)
+
+        status = edsdk_dll.EdsRelease( file_item )
+        self.Error("Release file item",status)
+
+        status = edsdk_dll.EdsRelease( file_stream )
+        self.Error("Release file stream",status)
 
     def Error(self, msg, error):
-        c_hlp.ProcessError( msg, error, eds_err )
+        if error != 0 or c_hlp.verbose:
+            c_hlp.ProcessError( msg, error, eds_err )
+
+    def GetDCIMFolder(self):
+        count    = ctypes.c_ulonglong(0)
+        DCIM     = None
+        dir_item = ctypes.c_void_p()
+        volume   = ctypes.c_void_p()
+
+        status = edsdk_dll.EdsGetChildCount( self.camera, ctypes.byref(count) )
+        self.Error("Get Camera count", status)
+
+        status = edsdk_dll.EdsGetChildAtIndex( self.camera,
+                                               0,
+                                               ctypes.byref(volume) )
+        self.Error("Get Volume", status)
+
+        status = edsdk_dll.EdsGetChildCount( volume, ctypes.byref(count) )
+        self.Error("Get Volume count", status)
+
+        for i in range(count.value):
+
+            dir_item_info = EdsDirectoryItemInfo()
+
+            status = edsdk_dll.EdsGetChildAtIndex( volume,
+                                                   i,
+                                                   ctypes.byref(dir_item) )
+            self.Error("Get Child at Index %i"%i, status)
+
+            status = edsdk_dll.EdsGetDirectoryItemInfo(
+                        dir_item,
+                        ctypes.byref(dir_item_info) )
+            self.Error("Get Item Info", status)
+
+            if dir_item_info.szFileName == "DCIM":
+                DCIM = dir_item
+                status = edsdk_dll.EdsRelease(dir_item)
+                self.Error("Release of dir_item error", status)
+                dir_item = None
+                break
+
+        return DCIM
 
     def GrabImage(self):
         if self.stream.value != None:
@@ -273,7 +417,6 @@ class CanonLiveView():
 
             # Give time for the mirror to flip up
             time.sleep(2)
-
 
         # Create the stream that the live preview data will use
         status = edsdk_dll.EdsCreateMemoryStream( self.buffer_size,
@@ -402,6 +545,8 @@ class CanonLiveView():
         #                                        ctypes.sizeof(prop),
         #                                        ctypes.byref(prop) )
 
+        self.DownloadImage()
+
     def UpdateSetting(self, setting, value):
         """ Update settings on the camera. Intended for ISO Speed, Aperture,
             Shutter Speed. """
@@ -418,6 +563,49 @@ class CanonLiveView():
 ###                                Functions                                ###
 ###                                                                         ###
 ###############################################################################
+def ArgParser():
+    """ This function will handle the input arguments while keeping the main
+        function tidy. """
+
+    usage = """
+    script_name.py flags
+
+    This script is for .
+
+            """
+
+    parser = argparse.ArgumentParser( description = "Description",
+                                      usage = usage)
+    # parser.add_argument( "-d",
+    #                      nargs   = '*',
+    #                      action  = "store",
+    #                      default = [],
+    #                      dest    = "depths",
+    #                      help    = "The depth(s) to view." )
+
+    parser.add_argument( "--debug",
+                         action  = "store_const",
+                         const   = True,
+                         default = False,
+                         dest    = "debug",
+                         help    = "Run in debug mode." )
+
+    # parser.add_argument( "DIR",
+    #                      action  = "store",
+    #                      default = "",
+    #                      help    = "The directory of images to process." )
+
+    parser.add_argument( "-v",
+                         action  = "store_const",
+                         const   = True,
+                         default = False,
+                         dest    = "verbose",
+                         help    = "Make this script a chatterbox." )
+
+    args = parser.parse_args()
+
+    c_hlp.debug   = args.debug
+    c_hlp.verbose = args.verbose
 
 def Timer(text="Segment"):
     """ Use for evaluating performance. Call in pairs to print out elapsed
@@ -443,6 +631,7 @@ if __name__ == "__main__":
 
     while True:
         # Timer()
+        live = not live
 
         canon_lp.GrabImage()
 

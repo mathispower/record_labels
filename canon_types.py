@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import ctypes
 
 # REQUIRES the canon sdk extracted to this folder with the heirarchy intact
 # starting with the Windows directory. See the type_file path for specifics.
@@ -91,6 +92,15 @@ shutter_speed = {
                "2.5":0x2D,       "1/10":0x54,      "1/320":0x7B, "1/8000":0xA0,
                  "2":0x30,       "1/13":0x55,      "1/350":0x7C,
                "1.6":0x33,       "1/15":0x58,      "1/400":0x7D }
+#
+class EdsDirectoryItemInfo(ctypes.Structure):
+    _fields_ = [ ("size", ctypes.c_ulonglong),
+                 ("isFolder", ctypes.c_int),
+                 ("groupID", ctypes.c_ulong),
+                 ("option", ctypes.c_ulong),
+                 ("szFileName", ctypes.c_char * 256),
+                 ("format", ctypes.c_ulong),
+                 ("dateTime", ctypes.c_ulong) ]
 
 #
 eds_typ = {} # this will be dictionary of edsdk types
